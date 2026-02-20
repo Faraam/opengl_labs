@@ -1,6 +1,7 @@
 #include <GLFW/glfw3.h>
 #include <cmath>
 #include <iostream>
+#include <vector>
 using namespace std;
 int screenW = 800;
 int screenH = 600;
@@ -10,6 +11,9 @@ double viewerTheta = 0.0;
 
 bool isMoving = false;
 double mLastX = 0.0, mLastY = 0.0;
+
+float lightPower = 1.0f;
+float shininess = 64.0f;
 
 const double const1 = 3;
 const double const2 = 4;
@@ -31,21 +35,26 @@ public:
 
     double u0, u1;
     double v0, v1;
+    double r = 1;
+    double g = 0;
+    double b = 0;
 
     int Nu, Nv;
 
     Surface(SurfaceFunc func,
             double _u0, double _u1, int _Nu,
-            double _v0, double _v1, int _Nv)
+            double _v0, double _v1, int _Nv,
+            double _r = 1, double _g = 0, double _b = 0)
         : func(func),
           u0(_u0), u1(_u1), Nu(_Nu),
-          v0(_v0), v1(_v1), Nv(_Nv)
+          v0(_v0), v1(_v1), Nv(_Nv),
+          r(_r), g(_g), b(_b)
     {
     }
 
     void draw() const
     {
-        glColor3f(1, 0, 0); 
+        glColor3f(r, g, b);
         double du = (u1 - u0) / Nu;
         double dv = (v1 - v0) / Nv;
 
@@ -70,6 +79,33 @@ public:
     }
 };
 
+class MultiSurface
+{
+public:
+    vector<Surface> surfaces;
+
+    MultiSurface() {}
+
+    explicit MultiSurface(vector<Surface> s)
+        : surfaces(move(s))
+    {
+    }
+
+    void add(Surface &s)
+    {
+        surfaces.push_back(s);
+    }
+    void add(Surface s)
+    {
+        surfaces.push_back(std::move(s));
+    }
+    void draw() const
+    {
+        for (const auto &s : surfaces)
+            s.draw();
+    }
+};
+
 double ellipsoid_r(double phi, double theta)
 {
     const double s = sin(theta);
@@ -84,6 +120,21 @@ double ellipsoid_r(double phi, double theta)
 
     return 1.0 / sqrt(denom);
 }
+Vec3 top_circle_point(double phi, double r)
+{
+    Vec3 p;
+    p.x = r * cos(phi);
+    p.y = r * sin(phi);
+    p.z = const3;
+
+    return p;
+}
+Vec3 bottom_circle_point(double phi, double r)
+{
+    Vec3 p = top_circle_point(phi, r);
+    p.z *= -1;
+    return p;
+}
 Vec3 ellipsoid_point(double phi, double theta)
 {
     double r = ellipsoid_r(phi, theta);
@@ -94,12 +145,16 @@ Vec3 ellipsoid_point(double phi, double theta)
     p.z = r * cos(theta);
     return p;
 }
-Vec3 cone_point(double x, double y)
+Vec3 cone_point(double phi, double z)
 {
     Vec3 p;
-    p.x = x;
-    p.y = y;
-    p.z = const3 * sqrt((x * x) / (const1 * const1) + (y * y) / (const2 * const2));
+
+    double r = const1 * (z + 5.0) / 10.0;
+
+    p.x = r * cos(phi);
+    p.y = r * sin(phi);
+    p.z = z;
+
     return p;
 }
 Vec3 paraboloid_point(double x, double y)
@@ -116,6 +171,16 @@ Vec3 cylinder_point(double phi, double z)
     p.x = const1 * cos(phi);
     p.y = const1 * sin(phi);
     p.z = z;
+    return p;
+}
+
+Vec3 sphere_point(double phi, double theta)
+{
+
+    Vec3 p;
+    p.x = const1 * sin(theta) * cos(phi);
+    p.y = const1 * sin(theta) * sin(phi);
+    p.z = const1 * cos(theta);
     return p;
 }
 
@@ -190,7 +255,34 @@ static void updateScroll(GLFWwindow *window, double xoffset, double yoffset)
     if (viewerR > 200.0)
         viewerR = 200.0;
 }
+void applyLightingParams();
+static void updateKey(GLFWwindow *window, int key, int scancode, int action, int mods)
+{
+    if (action != GLFW_PRESS && action != GLFW_REPEAT)
+        return;
 
+    const float powerStep = 0.1f;
+    const float shinyStep = 4.0f;
+
+    switch (key)
+    {
+    case GLFW_KEY_UP:
+        lightPower = lightPower + powerStep;
+        break;
+    case GLFW_KEY_DOWN:
+        lightPower = lightPower - powerStep;
+        break;
+    case GLFW_KEY_RIGHT:
+        shininess = shininess + shinyStep;
+        break;
+    case GLFW_KEY_LEFT:
+        shininess = shininess - shinyStep;
+        break;
+    default:
+        return;
+    }
+    applyLightingParams();
+}
 void drawCube()
 {
 
@@ -236,6 +328,60 @@ void updateCamera()
     glRotated(viewerTheta * 180.0 / M_PI, 1, 0, 0);
     glRotated(viewerPhi * 180.0 / M_PI, 0, 1, 0);
 }
+void applyLightingParams()
+{
+    GLfloat ambientBase[] = {0.2f, 0.2f, 0.2f, 1.0f};
+    GLfloat diffuseBase[] = {0.9f, 0.9f, 0.9f, 1.0f};
+    GLfloat specularBase[] = {0.5f, 0.5f, 0.5f, 1.0f};
+
+    GLfloat diffuse[] = {diffuseBase[0] * lightPower,
+                         diffuseBase[1] * lightPower,
+                         diffuseBase[2] * lightPower, 1.0f};
+
+    GLfloat specular[] = {specularBase[0] * lightPower,
+                          specularBase[1] * lightPower,
+                          specularBase[2] * lightPower, 1.0f};
+
+    glLightfv(GL_LIGHT0, GL_AMBIENT, ambientBase);
+    glLightfv(GL_LIGHT0, GL_DIFFUSE, diffuse);
+    glLightfv(GL_LIGHT0, GL_SPECULAR, specular);
+
+    glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, shininess);
+}
+void setupLighting()
+{
+    glEnable(GL_LIGHTING);
+    glEnable(GL_LIGHT0);
+    glEnable(GL_NORMALIZE);
+
+    glEnable(GL_COLOR_MATERIAL);
+    glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+
+    applyLightingParams();
+}
+void placeLight()
+{
+    GLfloat pos[] = {10.0f, 10.0f, 10.0f, 1.0f};
+    glLightfv(GL_LIGHT0, GL_POSITION, pos);
+}
+void setupFootball(MultiSurface &ms)
+{
+    int N = 20;
+    int dN = 20.0;
+    for (int i = 0; i < N; i++)
+    {
+        for (int j = 0; j < N; j++)
+        {
+            float color = (i + j) % 2;
+            double minPhi = (double)i / dN * 2.0 * M_PI;
+            double maxPhi = (double)(i + 1) / dN * 2.0 * M_PI;
+
+            double minTheta = (double)j / dN * M_PI;
+            double maxTheta = (double)(j + 1) / dN * M_PI;
+            ms.add(Surface(sphere_point, minPhi, maxPhi, 10, minTheta, maxTheta, 10, color, color, color));
+        }
+    }
+}
 
 int main()
 {
@@ -244,7 +390,7 @@ int main()
     glfwWindowHint(GLFW_DEPTH_BITS, 24);
     GLFWwindow *window =
         glfwCreateWindow(screenW, screenH, "lab1", NULL, NULL);
-    Surface *surface = nullptr;
+    MultiSurface ms = MultiSurface();
 
     int index;
 
@@ -253,7 +399,7 @@ int main()
     cout << "1 - Элипс\n";
     cout << "2 - Цилиндр\n";
     cout << "3 - Конус\n";
-    cout << "4 - Кубик (для тестов)\n";
+    cout << "4 - Футбольный мяч\n";
     cout << "> ";
 
     cin >> index;
@@ -261,18 +407,23 @@ int main()
     switch (index)
     {
     case 0:
-        surface = new Surface(paraboloid_point, -10, 10, 60, -10, 10, 60);
+        ms.add(Surface(paraboloid_point, -10, 10, 60, -10, 10, 60));
         break;
+
     case 1:
-        surface = new Surface(ellipsoid_point, 0, 2 * M_PI, 60, 0, 2 * M_PI, 60);
+        ms.add(Surface(ellipsoid_point, 0, 2 * M_PI, 60, 0, 2 * M_PI, 60));
         break;
     case 2:
-        surface = new Surface(cylinder_point, 0, 2 * M_PI, 60, -5, 5, 60);
+        ms.add(Surface(cylinder_point, 0, 2 * M_PI, 60, -5, 5, 60));
+        ms.add(Surface(top_circle_point, 0, 2 * M_PI, 60, 0, 3, 60));
+        ms.add(Surface(bottom_circle_point, 0, 2 * M_PI, 60, 0, 3, 60));
         break;
     case 3:
-        surface = new Surface(cone_point, -5, 5, 60, -5, 5, 60);
+        ms.add(Surface(cone_point, 0, 2 * M_PI, 60, -5, 5, 60));
+        ms.add(Surface(top_circle_point, 0, 2 * M_PI, 60, 0, 3, 60));
         break;
     case 4:
+        setupFootball(ms);
         break;
     // case 4:
     //     draw = drawSmth;
@@ -295,17 +446,20 @@ int main()
     glfwSetMouseButtonCallback(window, updateMouseClick);
     glfwSetCursorPosCallback(window, updateMouseMove);
     glfwSetScrollCallback(window, updateScroll);
+    glfwSetKeyCallback(window, updateKey);
 
     glfwShowWindow(window);
 
     glEnable(GL_DEPTH_TEST);
+    setupLighting();
 
     while (!glfwWindowShouldClose(window))
     {
         glClearColor(1, 1, 1, 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         updateCamera();
-        surface->draw();
+        placeLight();
+        ms.draw();
 
         glfwSwapBuffers(window);
         glfwPollEvents();
